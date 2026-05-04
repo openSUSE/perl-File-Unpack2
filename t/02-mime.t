@@ -79,9 +79,9 @@ my $sample = 'monotone.info';	# one of the below files, without regexps, for fur
 	  'Targa image data - RGB - RLE 32 x 32',
 	  ['application/octet-stream','image/x-tga']],
 
-  ## actually a 'audio/x-mpegurl'
+  ## actually a 'audio/x-mpegurl'; newer shared-mime-info may return text/plain
   'wzbc-2009-06-28-17-00.m3u' => 
-  	[ 'audio/x-mpegurl', 'us-ascii',
+  	[ qr{^(audio/x-mpegurl|text/plain)$}, 'us-ascii',
 	  'M3U playlist text'],
 
   ## File::LibMagic says application/octet-stream here:
