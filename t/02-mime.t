@@ -101,6 +101,14 @@ my $sample = 'monotone.info';	# one of the below files, without regexps, for fur
   'recursive-3level-removal-test.tar.gz' =>
   	[ qr{^application/(x-tar\+gzip|x-gzip|gzip)$}, qr{^(binary|unknown|)$},
     'gzip compressed data' ],
+
+  'intermediate-removal-test.tar.xz' =>
+  	[ 'application/x-xz', qr{^(binary|unknown|)$},
+	  'XZ compressed data' ],
+
+  'recursive-3level-removal-test.tar.xz' =>
+  	[ 'application/x-xz', qr{^(binary|unknown|)$},
+	  'XZ compressed data' ],
   #
 );
 plan tests => (-f $shared_mime_info_db ? 2 * keys %exp : 0) + 5;
