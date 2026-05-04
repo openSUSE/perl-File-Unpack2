@@ -10,6 +10,7 @@ helper/application=x-iso9660-image
 helper/application=x-shellscript
 helper/text=x-shellscript
 ignore.txt
+LICENSES/MIT.txt
 Makefile.PL
 MANIFEST			This list of files
 META.yml
@@ -32,11 +33,13 @@ t/data/Desktop.directory
 t/data/empty.odt
 t/data/good10.pdf
 t/data/intermediate-removal-test.tar.gz
+t/data/intermediate-removal-test.tar.xz
 t/data/IPA-snippet.pfa
 t/data/lxknf09SCc0.bin
 t/data/monotone.info
 t/data/pdftex-a.txt
 t/data/recursive-3level-removal-test.tar.gz
+t/data/recursive-3level-removal-test.tar.xz
 t/data/ruhyphal.tex
 t/data/test.mht
 t/data/test2.tga
