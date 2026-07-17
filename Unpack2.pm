@@ -607,8 +607,13 @@ sub new
     {
       my $env = 'FILE_UNPACK2_' . uc($cap);
       $obj{$cap} = defined $ENV{$env} ? $ENV{$env} : 0 unless defined $obj{$cap};
-      $obj{$cap} = _bytes_unit($obj{$cap});    # accepts plain numbers and 1G/500M/... suffixes
     }
+  # Only max_total_bytes takes a size suffix (1G/500M/...). max_files (a count) and helper_timeout
+  # (seconds) are plain numbers - do NOT run them through _bytes_unit, or "30m" would be read as
+  # 30 megabytes/megaseconds instead of what the user meant.
+  $obj{max_total_bytes} = _bytes_unit($obj{max_total_bytes});
+  $obj{max_files}      += 0;
+  $obj{helper_timeout} += 0;
 
   mkpath($obj{destdir}); # abs_path is unreliable if destdir does not exist
   $obj{destdir} = Cwd::fast_abs_path($obj{destdir});
