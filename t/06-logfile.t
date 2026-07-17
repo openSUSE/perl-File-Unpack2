@@ -58,5 +58,16 @@ is($u->{recursion_level} || 0, 0, "recursion_level returns to 0 after a successf
   is($u3->{recursion_level}, 1, "recursion_level preserved when inner unpack() hits non-existent path");
 }
 
+# Regression: recursion beyond the emergency $RECURSION_LIMIT must stop gracefully (return, no crash
+# or runaway) - the backstop against quines / absurdly deep nesting.
+{
+  my $testdir = File::Temp::tempdir("FU_06_XXXXX", TMPDIR => 1, CLEANUP => 1);
+  my $u4 = File::Unpack2->new(destdir => $testdir, verbose => 0, logfile => '/dev/null');
+  $u4->{recursion_level} = 1000;    # pretend we are absurdly deep
+  my $rc = eval { local $SIG{ALRM} = sub { die "ALARM\n" }; alarm 20; my $r = $u4->unpack("t/data"); alarm 0; $r };
+  alarm 0;
+  ok(defined $rc, "unpack() past the recursion limit returns instead of recursing/hanging");
+}
+
 # done_testing does not exist in SLE11_SP2
 # done_testing();

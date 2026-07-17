@@ -109,4 +109,49 @@ subtest 'an archive containing a fifo does not hang and the fifo is skipped' => 
   ok(($u->{skipped}{device_node} || 0) >= 1, 'the fifo was skipped as a special file');
 };
 
+subtest 'a helper streaming only to a pipe is NOT killed (pipe output counts as progress)' => sub {
+  # It writes only to STDERR (a pipe: fdinfo pos stays 0, so the fd-position detector sees no
+  # progress) every 0.3s for ~3s, then writes a marker file at the very end. With stall_timeout=2,
+  # if pipe output did not count as progress it would be killed at ~2s and the marker never written.
+  my ($u, $src, $dest) = stall_setup(
+    [$^X, '-e', 'for (1..10) { print STDERR "x"; select undef,undef,undef,0.3 } open my $f, ">", "pipe.done" or die; print $f "ok"; close $f']);
+  plan skip_all => 'could not build fixture' unless $u;
+
+  my $done = guarded(30, sub { $u->unpack($src) });
+  ok($done, 'unpack() returned');
+  my $marker;
+  find(sub { $marker = $File::Find::name if $_ eq 'pipe.done' }, $dest);
+  ok($marker, 'a pipe-only helper ran to completion - pipe output kept it alive, not falsely killed');
+};
+
+subtest 'a reparented grandchild holding the pipe is reaped via its process group' => sub {
+  # The direct child backgrounds a grandchild (which inherits the stdout pipe and the helper's
+  # process group) and then exits, so the grandchild reparents to init - invisible to the ppid walk.
+  # Only killing the captured process group reaps it; otherwise finish() blocks on the still-open
+  # pipe forever (caught by the alarm as a failure).
+  my ($u, $src) = stall_setup(['/bin/sh', '-c', 'sleep 999 & exit 0']);
+  plan skip_all => 'could not build fixture' unless $u;
+
+  my $done = guarded(30, sub { $u->unpack($src) });
+  ok($done, 'unpack() returned (reparented grandchild was group-killed; finish did not hang)');
+};
+
+subtest 'stall_timeout config: default 120, env override, and 0 disables' => sub {
+  my $mk = sub { File::Unpack2->new(destdir => tempdir(CLEANUP => 1), verbose => 0, logfile => '/dev/null', @_) };
+  {
+    local $ENV{FILE_UNPACK2_STALL_TIMEOUT};
+    delete $ENV{FILE_UNPACK2_STALL_TIMEOUT};
+    is($mk->()->{stall_timeout}, 120, 'default is 120s');
+  }
+  {
+    local $ENV{FILE_UNPACK2_STALL_TIMEOUT} = 45;
+    is($mk->()->{stall_timeout}, 45, 'env override honoured');
+  }
+  {
+    local $ENV{FILE_UNPACK2_STALL_TIMEOUT} = 0;
+    is($mk->()->{stall_timeout}, 0, 'env "0" disables (not silently defaulted back to 120)');
+  }
+  is($mk->(stall_timeout => 0)->{stall_timeout}, 0, 'explicit 0 disables');
+};
+
 done_testing;
