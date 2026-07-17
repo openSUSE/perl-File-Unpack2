@@ -583,6 +583,17 @@ sub new
   $obj{maxfilesize} = _bytes_unit($obj{maxfilesize});
   $ENV{'FILE_UNPACK2_MAXFILESIZE'} = $obj{maxfilesize};	# so that children see the same.
 
+  # Kill a mime-helper that makes no I/O progress for this many seconds, so a stuck helper
+  # (blocked on a fifo, deadlocked pipe, ...) can never hang unpacking forever. 0 disables.
+  # An env value of "0" must disable it, so we cannot use the ||= idiom here.
+  unless (defined $obj{stall_timeout})
+    {
+      $obj{stall_timeout} = defined $ENV{'FILE_UNPACK2_STALL_TIMEOUT'}
+        ? $ENV{'FILE_UNPACK2_STALL_TIMEOUT'} : 120;
+    }
+  $obj{stall_timeout} += 0;	# numeric seconds
+  $ENV{'FILE_UNPACK2_STALL_TIMEOUT'} = $obj{stall_timeout};	# so that children see the same.
+
   mkpath($obj{destdir}); # abs_path is unreliable if destdir does not exist
   $obj{destdir} = Cwd::fast_abs_path($obj{destdir});
   $obj{destdir} =~ s{(.)/+$}{$1}; #  assert no trailing '/'.
@@ -1334,6 +1345,7 @@ sub run
   my $h = eval { IPC::Run::start @run; };
   return wantarray ? (undef, $@) : undef unless $h;
 
+  my $killed = 0;
   while ($h->pumpable)
     {
       # eval {} guards against 'process ended prematurely' errors.
@@ -1343,10 +1355,20 @@ sub run
         {
 	  $t->{has_fired}++;
 	  $opt->{prog}->($h, $opt);
+	  if ($opt->{stalled})
+	    {
+	      # A stalled helper (blocked on a fifo, deadlocked pipe, ...) would pump forever.
+	      # Kill its whole family so pumpable() clears, then stop.
+	      _kill_family($h);
+	      $killed = 1;
+	      last;
+	    }
 	  $t->start($opt->{every});
 	}
     }
-  $h->finish;
+  # finish() throws when a child died on a signal (our kill), so guard it on the killed path only,
+  # keeping the normal path's behaviour unchanged.
+  if ($killed) { eval { $h->finish } } else { $h->finish }
   $opt->{finished} = 1;
 
   ## call it once more, to get the 100% printout, or somthing else...
@@ -1486,14 +1508,32 @@ sub _run_mime_helper
 
 
   my $run_error = undef;	# we capture the first error line for the logfile.
-  my @r = $self->run(@cmd, 
-    {
-      debug => ($self->{verbose} > 2) ? $self->{verbose} - 2 : 0, 
-      watch => $args->{src}, every => 5, fu_obj => $self, mime_helper => $h, 
+  # Watchdog cadence: tick several times within the stall window so a stalled helper is caught
+  # promptly (and small stall_timeouts in tests react quickly); default to the historic 5s.
+  my $stall_timeout = $self->{stall_timeout} || 0;
+  my $every = 5;
+  if ($stall_timeout) { $every = int($stall_timeout / 4); $every = 1 if $every < 1; $every = 5 if $every > 5; }
+
+  my %run_opts = (
+      debug => ($self->{verbose} > 2) ? $self->{verbose} - 2 : 0,
+      watch => $args->{src}, every => $every, stall_timeout => $stall_timeout, fu_obj => $self, mime_helper => $h,
       err => sub { print "E: @_\n" if $self->{verbose}; $run_error = "@_" unless length $run_error },
-      prog => sub 
+      prog => sub
 {
-  $_[1]{tick}++; 
+  # Stall watchdog: if no descendant helper advances any fd (reads input or writes output) for
+  # stall_timeout seconds, flag it so run() can kill the family. Runs unconditionally (in every
+  # branch) - a helper that finished reading its input but is stuck writing output would otherwise
+  # look idle to the source-only progress display below.
+  if ($_[1]{stall_timeout})
+    {
+      my $now = _family_fd_positions(POSIX::getpid());
+      if (_fd_progress($_[1]{fdpos}, $now)) { $_[1]{last_progress} = time }
+      elsif (time - ($_[1]{last_progress} ||= time) >= $_[1]{stall_timeout})
+        { $_[1]{stalled} = "stall timeout: mime helper made no progress for $_[1]{stall_timeout}s" }
+      $_[1]{fdpos} = $now;
+    }
+
+  $_[1]{tick}++;
   my $name = $_[1]{watch}; $name =~ s{.*/}{};
   if ($_[1]{finished})
     {
@@ -1532,8 +1572,9 @@ sub _run_mime_helper
         if $self->{verbose};
     }
 },
-    });
-    
+  );
+  my @r = $self->run(@cmd, \%run_opts);
+
   # system("ls -la $jail_base/..; find $jail_base");
   # print STDERR Dumper \@r;
 
@@ -1551,11 +1592,15 @@ sub _run_mime_helper
   # t/data/pdftxt-a.txt is really plain/text altthough it begins with "PDF-1.4..." and
   # thus fools the mime-type tests.
   # should run other helpers, and finally 'strings -' as a trivial fallback.
-  if ($nonzero[0])
+  if ($nonzero[0] or $run_opts{stalled})
     {
+      warn "File::Unpack2: $run_opts{stalled} (" . fmt_run_shellcmd(@cmd) . ")\n" if $run_opts{stalled};
       rmtree($jail_base);	# empty or has unusable contents now.
       ## FIXME: we should at least copy in the original file as is...
-      return { error => "nonzero retval:\n " . Dumper(\@r), stderr => $run_error };
+      my $error = $run_opts{stalled}
+        ? "$run_opts{stalled}: " . fmt_run_shellcmd(@cmd)
+        : "nonzero retval:\n " . Dumper(\@r);
+      return { error => $error, stderr => $run_error };
     }
 
   # loop through all _: if it only contains one item , replace it with this item,
@@ -1782,6 +1827,91 @@ sub _fuser_offset
 	  $p->{$pid}{fd}{$fd}{size} = -s $p->{$pid}{fd}{$fd}{file};
 	}
     }
+}
+
+# Strict list of PIDs descended from $ppid (children, grandchildren, ...), walking /proc ppid
+# chains. Unlike _children_fuser this deliberately does NOT include reparented (ppid==1) processes:
+# it is used to *kill* a stalled helper family, so it must never reach outside our own descendants.
+sub _descendant_pids
+{
+  my ($ppid) = @_;
+  return () unless $ppid and $ppid > 1;
+
+  opendir my $dir, "/proc" or return ();
+  my @all = grep { /^\d+$/ } readdir $dir;
+  closedir $dir;
+
+  my %parent;
+  for my $p (@all)
+    {
+      next unless open my $in, "<", "/proc/$p/stat";
+      my $text = join '', <$in>;
+      close $in;
+      $parent{$p} = $3 if $text =~ m{\((.*)\)\s+(\w)\s+(\d+)}s;
+    }
+
+  my @family;
+  for my $p (@all)
+    {
+      my $pid = $p;
+      my %seen;
+      while ($pid and $pid > 1 and !$seen{$pid}++)
+        {
+	  if ($pid == $ppid) { push @family, $p; last }
+	  last unless defined $parent{$pid};
+	  $pid = $parent{$pid};
+	}
+    }
+  return grep { $_ != $ppid } @family;
+}
+
+# Snapshot of byte offsets ("pid:fd" => pos) for every open fd of $ppid's descendant helpers.
+# Used to tell whether a helper is making any I/O progress at all: a stalled helper leaves every
+# offset unchanged. Pipes/fifos report pos 0 and therefore simply never count as progress.
+sub _family_fd_positions
+{
+  my ($ppid) = @_;
+  my %pos;
+  for my $pid (_descendant_pids($ppid))
+    {
+      opendir my $d, "/proc/$pid/fd" or next;
+      my @fds = grep { /^\d+$/ } readdir $d;
+      closedir $d;
+      for my $fd (@fds)
+        {
+	  next unless open my $in, "<", "/proc/$pid/fdinfo/$fd";
+	  while (defined (my $line = <$in>))
+	    {
+	      if ($line =~ m{^pos:\s+(\d+)}) { $pos{"$pid:$fd"} = $1; last }
+	    }
+	  close $in;
+	}
+    }
+  return \%pos;
+}
+
+# True if any fd advanced, opened, or closed between two _family_fd_positions() snapshots.
+sub _fd_progress
+{
+  my ($prev, $cur) = @_;
+  return 1 unless defined $prev;
+  for my $k (keys %$cur)  { return 1 if !exists $prev->{$k} or $cur->{$k} > $prev->{$k} }
+  for my $k (keys %$prev) { return 1 unless exists $cur->{$k} }
+  return 0;
+}
+
+# Forcibly terminate a stalled helper and its whole descendant family, so pump()/finish() can
+# unwind. Grandchildren must die too: a survivor still holding the helper's pipe would keep the
+# harness pumpable and hang finish() forever.
+sub _kill_family
+{
+  my ($h) = @_;
+  my @pids = _descendant_pids(POSIX::getpid());
+  kill 'TERM', @pids if @pids;
+  select undef, undef, undef, 0.3;
+  @pids = _descendant_pids(POSIX::getpid());
+  kill 'KILL', @pids if @pids;
+  eval { $h->kill_kill(grace => 1) };
 }
 
 

@@ -39,6 +39,10 @@ for my $f (keys %{$log2->{unpacked}})
   }
 ok($filecount > 10, "more than 10 unpacked files: $filecount");
 
+# Regression (happy path): a completed unpack must leave recursion_level back at 0. A leak here
+# is what previously tripped $RECURSION_LIMIT on large trees and silently aborted deep recursion.
+is($u->{recursion_level} || 0, 0, "recursion_level returns to 0 after a successful unpack");
+
 # Regression: when an inner unpack() call finds $archive missing on disk
 # (the path can vanish between the caller's stat and us re-stating it under
 # concurrent file-system activity), the early return must not leave
