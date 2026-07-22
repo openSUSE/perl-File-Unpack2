@@ -3,6 +3,7 @@ children_fuser2.pl
 contrib/multipart_mime.pl
 contrib/stringsx.c
 contrib/stringsx.pl
+file_unpack2
 file_unpack2.pl
 FIXME.txt
 helper/application=msword

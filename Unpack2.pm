@@ -1346,7 +1346,17 @@ sub run
 	  my $orig = $opt->{$ch};
 	  $opt->{$ch} = sub { $opt->{last_progress} = time; $orig->(@_) };
 	}
-      $opt->{init} ||= sub { setpgrp(0, 0) };    # builtin; POSIX::setpgrp is unimplemented on modern perl
+      $opt->{init} ||= sub {
+        # PR_SET_PDEATHSIG(SIGKILL): if our parent (the unpack worker) is killed, restarted, crashes
+        # or is OOM-reaped, the kernel SIGKILLs us the instant it dies - so a stuck helper (e.g. a
+        # malicious cyclic-hardlink tar spinning on stat()/linkat()) can never be orphaned to
+        # ppid==1 and spin forever after the stall watchdog's own process is gone. This complements
+        # the watchdog (which only reaps while the parent lives) and setpgrp below (which lets
+        # _kill_family reap the whole group while the parent lives). PR_SET_PDEATHSIG is 1 on every
+        # Linux arch; SYS_prctl varies (167 aarch64, 157 x86_64) so resolve it via syscall.ph.
+        eval { require 'syscall.ph'; syscall(SYS_prctl(), 1, 9) if defined &SYS_prctl; 1 };
+        setpgrp(0, 0);    # builtin; POSIX::setpgrp is unimplemented on modern perl
+      };
     }
 
   my $has_i_redir = 0;
