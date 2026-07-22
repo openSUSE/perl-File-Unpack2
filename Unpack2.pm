@@ -91,6 +91,22 @@ $ENV{PATH} = '/usr/bin:/bin';
 $ENV{SHELL} = '/bin/sh';
 delete $ENV{ENV};
 
+# Optional safeguard: the prctl(2) syscall number for arming PR_SET_PDEATHSIG on mime helpers (see
+# run()'s init hook), resolved once from the system's own syscall.ph. Deliberately NOT a hardcoded
+# arch-specific map - it is left undef where syscall.ph is not installed (e.g. slimmed CI perls),
+# and the safeguard is then simply skipped. It is a belt to the stall watchdog's braces, not
+# load-bearing; production perls ship syscall.ph, so it is armed there.
+our $SYS_PRCTL;
+{
+  # Load syscall.ph in its OWN throwaway package: it defines hundreds of SYS_* constant subs into the
+  # current package, which would pollute File::Unpack2 (and break Pod::Coverage). We only want one.
+  no warnings; local $@;
+  if (eval { package File::Unpack2::_Syscall; require 'syscall.ph'; 1 } and defined &File::Unpack2::_Syscall::SYS_prctl)
+    {
+      $SYS_PRCTL = File::Unpack2::_Syscall::SYS_prctl();
+    }
+}
+
 # what we name the temporary directories, while helpers are working.
 my $TMPDIR_TEMPL = '_fu_XXXXX';
 
@@ -1347,14 +1363,18 @@ sub run
 	  $opt->{$ch} = sub { $opt->{last_progress} = time; $orig->(@_) };
 	}
       $opt->{init} ||= sub {
-        # PR_SET_PDEATHSIG(SIGKILL): if our parent (the unpack worker) is killed, restarted, crashes
-        # or is OOM-reaped, the kernel SIGKILLs us the instant it dies - so a stuck helper (e.g. a
-        # malicious cyclic-hardlink tar spinning on stat()/linkat()) can never be orphaned to
-        # ppid==1 and spin forever after the stall watchdog's own process is gone. This complements
-        # the watchdog (which only reaps while the parent lives) and setpgrp below (which lets
-        # _kill_family reap the whole group while the parent lives). PR_SET_PDEATHSIG is 1 on every
-        # Linux arch; SYS_prctl varies (167 aarch64, 157 x86_64) so resolve it via syscall.ph.
-        eval { require 'syscall.ph'; syscall(SYS_prctl(), 1, 9) if defined &SYS_prctl; 1 };
+        # Optional safeguard (armed only where syscall.ph gave us the prctl number - see $SYS_PRCTL):
+        # PR_SET_PDEATHSIG(SIGKILL) makes the kernel kill this helper the instant its parent worker
+        # dies, so a stuck helper (e.g. a malicious cyclic-hardlink tar spinning on stat()/linkat())
+        # is not orphaned to ppid==1 to spin forever when the worker is force-stopped mid-unpack
+        # (Minion "stop job", a hard restart, a crash) - the case the stall watchdog can't cover
+        # because it dies with the worker. PR_SET_PDEATHSIG is 1 on every Linux arch. Where the
+        # syscall number was unresolved this is skipped; then that narrow orphan window remains and
+        # such orphans must be cleaned up out of band (or the worker stopped via systemd
+        # KillMode=control-group, which reaps the whole cgroup).
+        eval { syscall($SYS_PRCTL, 1, POSIX::SIGKILL()) if $SYS_PRCTL; 1 };
+        # ... and put each helper in its own process group so _kill_family can reap the whole family
+        # (grandchildren included) while we are alive.
         setpgrp(0, 0);    # builtin; POSIX::setpgrp is unimplemented on modern perl
       };
     }
