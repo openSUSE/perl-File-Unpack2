@@ -84,7 +84,7 @@ Version 0.69
 
 # We'll have 1.x versions only after minfree() has a baseline implementation.
 # Please run perl Makefile.PL after changing the version here.
-our $VERSION = '1.4';
+our $VERSION = '1.5';
 
 POSIX::setlocale(&POSIX::LC_ALL, 'C');
 $ENV{PATH} = '/usr/bin:/bin';
