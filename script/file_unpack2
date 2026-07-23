@@ -262,9 +262,10 @@ Do not unpack. Print the first unpack command only.
 
 =item B<-u> B<--use-mime-helper-dir> I<dir>
 
-Include an additional directory of mime helpers. Usable multiple times; later
-additions take precedence. The helpers bundled with File::Unpack2 are always
-available without this option.
+Include a directory of external mime helper scripts (named after the mime types
+they handle). Usable multiple times; later additions take precedence. File::Unpack2
+ships no helpers of its own, so this option, or the C<FILE_UNPACK2_HELPER_DIR>
+environment variable, is how you add a directory of them.
 
 =item B<-f> B<--follow-file-symlinks>
 

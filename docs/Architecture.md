@@ -37,47 +37,52 @@ detection needs them, and the module degrades gracefully if one is missing.
 ## Dispatch to mime helpers
 
 Once a file's type is known, unpacking it is delegated to a **mime helper** for that type. A helper is just
-"the thing that knows how to open this kind of file". There are two kinds, and they are treated identically
-once registered:
+"the thing that knows how to open this kind of file". Common formats are covered by **built-in helpers**:
+entries baked into the module that wrap the standard command line tools — `tar`, `xz`/`lzcat`, `unzip`,
+`rpm2cpio` piped into `cpio`, `7z`, `unrar`, `cabextract`, `ar` for `.deb`, `pdftotext`/`pdfimages` for PDFs,
+and so on. Each entry pairs a mime-type pattern with a suffix hint and the command (with redirections and
+pipelines) to run.
 
-- **Built-in helpers** are entries baked into the module that wrap the standard command line tools — `tar`,
-  `xz`/`lzcat`, `unzip`, `rpm2cpio` piped into `cpio`, `7z`, `unrar`, `cabextract`, `ar` for `.deb`,
-  `pdftotext`/`pdfimages` for PDFs, and so on. Each entry pairs a mime-type pattern with a suffix hint and the
-  command (with redirections and pipelines) to run.
-- **External helpers** are small executable scripts, one per mime type, discovered from a directory. This is
-  the extension point: supporting a new format is a matter of dropping in a script, with no change to the
-  module.
+The built-ins cover the archive and compression formats a distribution is made of. For anything else, the
+**extension mechanism** lets a consumer teach File::Unpack2 a new format without changing the module.
 
-The naming convention ties a helper to its type. A helper's name is the mime type with `/` written as `=`
-(filesystems dislike `/` in names), and an `x-` or `ANY+` prefix after the `=` is treated as implicit — so a
-file named `application=x-debian-package` handles `application/x-debian-package`. When several registered
-helpers could match, the most specific wins: an exact name beats one with wildcards, a wildcard *after* the
-`=` beats one before it, and more-recently-added directories take precedence over earlier ones. This lets a
-site override a built-in simply by supplying an external helper of the same name in a higher-precedence
-directory.
+### Extending: two ways to add a helper
 
-### Where helpers live, and why that matters for packaging
+- **Programmatically**, with the `mime_helper` method: register a command for a mime type, using `%(src)s`,
+  `%(destfile)s` and friends as placeholders that are filled in at call time. This is how a consumer adds a
+  format it cares about; Cavil, for instance, registers a `zstd` helper this way at startup.
+- **From a directory**, with the `mime_helper_dir` method (or the `FILE_UNPACK2_HELPER_DIR` environment
+  variable, or the `helper_dir` constructor argument): every executable in the directory is registered as a
+  helper, named after the mime type it handles. Nothing is scanned unless a directory is explicitly configured.
 
-The helpers bundled with this distribution ship *inside the module tree*, under
-`lib/File/Unpack2/resources/helper/`, and are located at run time relative to the module file itself (the same
-trick Mojolicious uses for its bundled assets). This is a deliberate packaging decision. Because they live
-under `lib/`, ExtUtils::MakeMaker installs them automatically alongside the `.pm` file — there is no separate
-copy step, no files landing in `/usr/share`, and nothing outside the standard `lib/` and `script/` directories.
-That is what lets the SUSE Linux Perl packaging pick up File::Unpack2 fully automatically, the same way it
-already handles sibling projects. An administrator who wants to add or override helpers can still point the
-`FILE_UNPACK2_HELPER_DIR` environment variable (or the `helper_dir` constructor argument) at a directory of
-their own; that directory is searched in addition to, and at higher precedence than, the bundled one.
+The naming convention ties a helper to its type. A helper's name (or the `mime_helper` pattern) is the mime
+type with `/` written as `=` (filesystems dislike `/` in names), and an `x-` or `ANY+` prefix after the `=` is
+treated as implicit — so `application=x-debian-package` handles `application/x-debian-package`. When several
+registered helpers could match, the most specific wins: an exact name beats one with wildcards, a wildcard
+*after* the `=` beats one before it, and a more-recently-added helper takes precedence. This lets a consumer
+override a built-in simply by registering a helper of the same name.
 
-### The helper protocol
+### Writing a mime helper
 
-Every helper — built-in or external — is invoked the same way: it is run with its working directory already
-set to a fresh, empty output directory, and it is handed the source path, a suggested output name, the output
-directory, the mime type, the description, and a config directory. Its job is to place the unpacked contents
-into the current directory using *relative* paths only. A helper signals success with exit status zero; a
-non-zero exit is recorded as an error against that one file and unpacking continues elsewhere. A helper that
-recognises the file is already as unpacked as it can be (for example a plain text file) can say so, and the
-file is passed through unchanged. Because the contract is this small, a new helper is genuinely a few lines of
-shell.
+A directory helper is an ordinary executable — a few lines of shell is typical. It is invoked with its working
+directory already set to a fresh, empty output directory, and it is handed six arguments:
+
+```
+$1  source path        the file to unpack (absolute)
+$2  suggested name     a destination name the helper may use
+$3  destination dir    the output directory (also the current working directory)
+$4  mime type          as detected
+$5  description         libmagic's human-readable description
+$6  config dir          a directory holding a JSON dump of the unpacker's config
+```
+
+Its job is to place the unpacked contents into the current directory, using *relative* paths only. It signals
+success with exit status zero; a non-zero exit is recorded as an error against that one file, and unpacking
+continues elsewhere. A helper that determines the file is already as unpacked as it can be may symlink the
+suggested name to the source to say "take it as is", which stops recursion into it. Because the contract is
+this small, and because it is the same whether the helper is built in, registered by `mime_helper`, or found
+in a directory, adding format support is cheap. Both registration styles are demonstrated end to end in
+`t/12-mime-helper.t`.
 
 ## Recursion: peeling every layer
 
@@ -173,6 +178,6 @@ killed. That suite is the contract: if you change the unpacking or hardening beh
 
 The public Perl API (`new`, `unpack`, `mime`, `mime_helper`, `mime_helper_dir`, `find_mime_helper`, `list`,
 `minfree`, …) is documented in the module's own POD (`perldoc File::Unpack2`). Adding support for a format is
-usually a new helper script rather than a code change; changing *policy* — the caps, the recursion limit, the
-detection layering — is a change to the module itself, and belongs together with a test in the adversarial
-suite that demonstrates the new behaviour.
+usually a helper registration rather than a code change — see "Extending" above; changing *policy* — the caps,
+the recursion limit, the detection layering — is a change to the module itself, and belongs together with a
+test in the adversarial suite that demonstrates the new behaviour.

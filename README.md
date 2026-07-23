@@ -16,8 +16,8 @@ the way down — never fooled by a misleading or missing suffix.
 - **Recursive by design.** Every unpacked file that looks like an archive is unpacked again, up to a safety
   depth limit — the goal is to expose *all* readable payload, not just the top layer.
 - **Pluggable helpers.** Most formats are handled by built-in helpers wrapping the usual tools (`tar`, `unzip`,
-  `rpm2cpio`, `7z`, `unrar`, …); new formats are added as tiny external scripts named after their mime type.
-  Bundled helpers ship *inside* the module and are found automatically.
+  `rpm2cpio`, `7z`, `unrar`, …). Support for further formats is an optional extension: register a helper command
+  in Perl, or point it at a directory of helper scripts. File::Unpack2 ships no external helpers of its own.
 - **Hardened against hostile input.** Scanning a distribution means ingesting binaries, malformed samples and
   archive "bombs". File::Unpack2 enforces optional caps on file count, total bytes and per-helper runtime,
   watches helpers for stalls, jails them inside the destination, and passes memory limits to the `xz`/`lzma`
@@ -84,7 +84,6 @@ Run `file_unpack2 --help` for the full option list.
 
 ```
 lib/File/Unpack2.pm                     The module: mime detection, dispatch, recursion, hardening
-lib/File/Unpack2/resources/helper/      Bundled external mime helpers (installed with the module)
 script/file_unpack2                     Command line front-end
 t/                                      Test suite, including adversarial / bomb fixtures
 docs/Architecture.md                    Design and rationale, in prose
@@ -92,19 +91,28 @@ docs/Architecture.md                    Design and rationale, in prose
 
 ## Adding a mime helper
 
-A helper is an executable named after the mime type it handles, with `/` written as `=` (an `x-` or `ANY+`
-prefix after the `=` is implied). It is run inside the freshly-created output directory and receives the source
-path, a suggested destination name, the destination directory, the mime type, the description and a config
-directory. Dropping such a script into a directory named with `FILE_UNPACK2_HELPER_DIR` (or passed as
-`helper_dir` to `new`) is all it takes:
+File::Unpack2 has no built-in helper for a format you need? Add one. There are two ways, and both are shown
+end-to-end in `t/12-mime-helper.t`.
+
+**In Perl (the usual way).** Register a command for a mime type; `%(src)s`, `%(destfile)s` etc. are substituted
+at call time. This is exactly how Cavil adds `zstd` support:
+
+```perl
+$u->mime_helper('application=zstd', qr{(?:zst)}, [qw(/usr/bin/zstd -d -c -f %(src)s)], qw(> %(destfile)s));
+```
+
+**As a directory of scripts.** Point `helper_dir` (or the `FILE_UNPACK2_HELPER_DIR` environment variable) at a
+directory of executables named after the mime type they handle, with `/` written as `=` (an `x-` or `ANY+`
+prefix after the `=` is implied). Each is run inside a fresh output directory and receives six arguments —
+source path, suggested destination name, destination directory, mime type, description, config directory:
 
 ```
 $ echo 'ar x "$1"' > "$FILE_UNPACK2_HELPER_DIR/application=x-debian-package"
 $ chmod a+x "$FILE_UNPACK2_HELPER_DIR/application=x-debian-package"
 ```
 
-See the `unpack` and `mime_helper_dir` documentation in `perldoc File::Unpack2`, and
-[`docs/Architecture.md`](docs/Architecture.md), for the full helper protocol.
+See the `unpack`, `mime_helper` and `mime_helper_dir` documentation in `perldoc File::Unpack2`, and the
+"Writing a mime helper" section of [`docs/Architecture.md`](docs/Architecture.md), for the full protocol.
 
 ## License
 

@@ -122,17 +122,12 @@ my $UNCOMP_BUFSZ = 1024;
 # got into a loop by then, than really have that many levels.
 my $RECURSION_LIMIT = 50;
 
-# External MIME helper scripts are bundled inside the module tree under
-# lib/File/Unpack2/resources/helper/ and located relative to this file (the same
-# trick Mojolicious uses for its bundled resources). This means they install
-# automatically with the module - no manual copy to /usr/share is needed. Admins
-# can still point elsewhere with the FILE_UNPACK2_HELPER_DIR environment variable.
-sub _default_helper_dir
-{
-  return $ENV{FILE_UNPACK2_HELPER_DIR} if $ENV{FILE_UNPACK2_HELPER_DIR};
-  (my $dir = __FILE__) =~ s{\.pm$}{/resources/helper};
-  return $dir;
-}
+# External MIME helpers are an optional extension: File::Unpack2 ships none of its
+# own. A caller enables directory-based helpers by pointing the FILE_UNPACK2_HELPER_DIR
+# environment variable (or the helper_dir constructor parameter) at a directory of
+# executable helper scripts; helpers can also be registered programmatically with
+# mime_helper(). Returns undef when no directory is configured, so nothing is scanned.
+sub _default_helper_dir { $ENV{FILE_UNPACK2_HELPER_DIR} }
 
 # we use '=' in the mime_name, this expands to '/(x\-|ANY\+)?'
 ##
@@ -269,12 +264,12 @@ possible> - shapes the whole design: unpacking continues as deep as it can, and
 individual failures are logged and stepped over rather than aborting the run.
 
 Unpacking is dispatched to per-mime-type B<helpers>. Many are built in (wrapping
-the usual command line tools such as C<tar>, C<unzip> and C<rpm2cpio>); more can
-be added as small external helper scripts named after the mime type they handle.
-The bundled helpers ship inside the module tree
-(F<lib/File/Unpack2/resources/helper/>) and are found automatically. See
-L</unpack> for the helper protocol and L</mime_helper_dir> for how helper
-directories are searched.
+the usual command line tools such as C<tar>, C<unzip> and C<rpm2cpio>). Support for
+further formats is an optional extension: register a helper command programmatically
+with C<mime_helper>, or point C<mime_helper_dir> (or the C<FILE_UNPACK2_HELPER_DIR>
+environment variable) at a directory of executable helper scripts named after the
+mime types they handle. File::Unpack2 itself ships no external helpers. See
+L</unpack> for the helper calling protocol.
 
 Because Cavil feeds it whole distributions - including binaries, deliberately
 malformed samples and archive "bombs" - File::Unpack2 is hardened against hostile
@@ -812,12 +807,11 @@ The logfile can also be parsed line by line. All file records is one line and st
 with a ' ' whitespace, and end in a ',' comma. Everything else is prolog or epilog.
 
 The actual unpacking is dispatched to MIME type specific helpers,
-selected using C<mime>. A MIME helper can either be built-in code, or an
-external shell-script found in a directory registered with
-C<mime_helper_dir>. The bundled helpers live inside the module tree at
-F<lib/File/Unpack2/resources/helper/> and are found automatically; the search
-directory can be overridden with the environment variable
-F<FILE_UNPACK2_HELPER_DIR> or the C<new> parameter C<helper_dir>.
+selected using C<mime>. A MIME helper can be built-in code, a command registered
+with C<mime_helper>, or an external executable script found in a directory
+registered with C<mime_helper_dir>. Such a directory can be supplied with the
+environment variable F<FILE_UNPACK2_HELPER_DIR> or the C<new> parameter
+C<helper_dir>; File::Unpack2 ships no external helpers of its own.
 
 The naming of helper scripts is described under C<mime_helper()>.
 
@@ -2205,6 +2199,10 @@ sub _subst_args
 sub mime_helper
 {
   my ($self, $name, $suffix_re, @args) = @_;
+
+  # Called with no name it is a pure getter: return the current helper list.
+  return $self->{mime_helper} unless defined $name;
+
   @args = ($name) unless @args;
   @args = ([@args]) unless ref $args[0];
   push @{$args[0]}, @def_mime_helper_fmt unless $#{$args[0]} or defined $args[1];
