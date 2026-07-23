@@ -1,46 +1,9 @@
 #
-# (C) 2010-2014, jnw@cpan.org, all rights reserved.
-# Distribute under the same license as Perl itself.
+# File::Unpack2 - aggressively unpack any archive, recursively, by mime type.
 #
+# (C) 2010-2014 Juergen Weigert, (C) 2023-2026 Sebastian Riedel.
+# Distributed under the same terms as Perl itself.
 #
-# sudo zypper -v in perl-Compress-Raw-Zlib
-#  -> 'nothing to do'
-# sudo zypper -v in 'perl-Compress-Raw-Zlib >= 2.027'
-#  -> 'perl' providing 'perl-Compress-Raw-Zlib >= 2.027' is already installed.
-# sudo zypper -v in --force perl-Compress-Raw-Zlib
-#  -> works, 
-# sudo zypper -v in --from 12 perl-Compress-Raw-Zlib
-#  -> works, if d.l.p is repo #12.
-# 
-# TODO: 
-# * evaluate File::Extract - Extract Text From Arbitrary File Types 
-#       (HTML, PDF, Plain, RTF, Excel)
-#
-# * make taint checks really check things, instead of $1 if m{^(.*)$};
-#
-# * Implement disk space monitoring.
-#
-# * formats:
-#   - use lzmadec/xzdec as fallback to lzcat.
-#   - glest has bzipped tar files named glest-1.0.10-data.tar.bz2.tar;
-#   - Not all suffixes are appended by . e.g. openh323-v1_15_2-src-tar.bz2 is different.
-#   - gzip -dc can unpack old compress .Z, add its mime-type
-#   - java-1_5_0-sun hides zip-files in shell scripts with suffix .bin
-#   - cpio fails on \.delta\.rpm
-#   - rpm files should extract all header info in readable format.
-#   - do we rely on rpm2cpio to handle them all: 
-#      rpm -qp --nodigest --nosignature --qf "%{PAYLOADCOMPRESSOR}" $f 
-#   - m{\.(otf|ttf|ps|eps)$}i
-#   - application/x-frame		# xorg-modular/doc/xorg-docs/specs/XPRINT/xp_libraryTOC.doc
-#
-# * blacklisting?
-#      # th_en_US.dat is an 11MB thesaurus in OOo
-#      skip if $from =~ m{(/(ustar|pax)\-big\-\d+g\.tar\.bz2|/th_en_US\.dat|/testtar\.tar|\.html\.(ru|ja|ko\.euc-kr|fr|es|cz))$}
-#
-# * use LWP::Simple::getstore() if $archive =~ m{^\w+://}
-# * application/x-debian-package is a 'application/x-archive' -> (ar xv /dev/stdin) < $qufrom";
-# * application/x-iso9660	-> "isoinfo -d -i %(src)s"
-# * PDF improvement: okular says: 'this document contains embedded files.' How can we grab those?
 
 use warnings;
 use strict;
@@ -110,9 +73,6 @@ our $SYS_PRCTL;
 # what we name the temporary directories, while helpers are working.
 my $TMPDIR_TEMPL = '_fu_XXXXX';
 
-# no longer used by the tick-tick ticker to show where we are.
-# my $lsof = '/usr/bin/lsof';
-
 # Compress::Raw::Bunzip2 needs several 100k of input data, we special case this.
 # File::LibMagic wants to read ca. 70k of input data, before it says application/vnd.ms-excel
 # Anything else works with 1024.
@@ -175,7 +135,6 @@ my @builtin_mime_helpers = (
   [ 'application=tar',       qr{(?:tar|gem)},      [\&_locate_tar,  qw(-xf %(src)s)] ],
   [ 'application=tar+bzip2', qr{(?:tar\.bz2|tbz)}, [\&_locate_tar, qw(-jxf %(src)s)] ],
   [ 'application=tar+gzip',  qr{t(?:ar\.gz|gz)},   [\&_locate_tar, qw(-zxf %(src)s)] ],
-#  [ 'application=tar+gzip',  qr{t(?:ar\.gz|gz)},      [qw(/home/testy/src/C/slowcat)], qw(< %(src)s |), [\&_locate_tar, qw(-zxf -)] ],
   [ 'application=tar+lzma',  qr{tar\.(?:xz|lzma|lz)}, [qw(/usr/bin/lzcat --memlimit-decompress=60%)], qw(< %(src)s |), [\&_locate_tar, qw(-xf -)] ],
   [ 'application=tar+lzma',  qr{tar\.(?:xz|lzma|lz)}, [qw(/usr/bin/xz -dc --memlimit-decompress=60% -f %(src)s)], '|', [\&_locate_tar, qw(-xf -)] ],
   [ 'application=rpm',       qr{(?:src\.r|s|r)pm}, [qw(/usr/bin/rpm2cpio %(src)s)], '|', [\&_locate_cpio_i] ],
@@ -1161,8 +1120,6 @@ sub unpack
 	         $self->_run_mime_helper($h, $archive, $new_name, $destdir, 
 	      				$m->[0], $m->[2], $self->{configdir});
 
-	      # die Dumper "_run_mime_helper: $archive, $new_name, $destdir", readlink($unpacked), $unpacked;
-
               unless (ref $unpacked or -e $unpacked or readlink($unpacked))
                 {
                   warn("archive=$archive, new_name=$new_name\n");
@@ -1428,8 +1385,6 @@ sub run
   push @run, "1>", $opt->{out} unless $has_o_redir;
   push @run, "2>", $opt->{err} unless $has_e_redir;
 
-# die Dumper \@run if $cmd[0][0] eq '/usr/bin/rpm2cpio';
-
   my $t;
      $t = IPC::Run::timer($opt->{every}-0.6) if $opt->{every};
   push @run, $t if $t;
@@ -1690,8 +1645,6 @@ sub _run_mime_helper
   );
   my @r = $self->run(@cmd, \%run_opts);
 
-  # system("ls -la $jail_base/..; find $jail_base");
-  # print STDERR Dumper \@r;
 
   chmod 0700, $jail_base if $self->{jail_chmod0};
   chdir $cwd or die "cannot chdir back to cwd: chdir($cwd): $!";
@@ -2288,16 +2241,6 @@ sub mime_helper_dir
 	    }
 	}
 
-# not needed, this is implicit in mime_helper()/$pat
-#
-#      # add expansion of = to =ANY+, if missing
-#      for my $h (keys %h)
-#        {
-#	  next if $h =~ m{=ANY+};
-#	  my $h2 = $h; $h2 =~ s{=}{=ANY+};
-#	  $h{$h2} = $h{$h} unless defined $h{$h2};
-#	}
-
       # calculate priorities
       for my $h (keys %h)
         {
@@ -2815,7 +2758,6 @@ sub mime
 	    }
 	  my $slurped = tell $IN;	# likely to get ca. 800k yacc!
 	  close $IN;
-          # use Data::Dumper; warn Dumper $stat, length($in{buf}), length($uncomp_buf), "slurped=$slurped";
 	}
     }
 
@@ -2824,14 +2766,6 @@ sub mime
     {
       my $compname = $2;
       my $next_uncomp_buf = '';
-
-      # use Data::Dumper; printf STDERR "calling mime with buf=%d bytes, compname=$compname\n", length($uncomp_buf);
-
-      #########
-      ## FIXME: adding +$compname to the filename prevents reopening in mime, if needed.
-      ## Why did I do this in the first place?
-      # my $m2 = $self->mime(buf => $uncomp_buf, file => "$in{file}+$compname", uncomp => \$next_uncomp_buf, recursion => 1);
-      #########
 
       my $m2 = $self->mime(buf => $uncomp_buf, file => $in{file}, uncomp => \$next_uncomp_buf, recursion => 1);
       # protecting against http://www.maximumcompression.com/selfgz.gz
@@ -2847,11 +2781,7 @@ sub mime
 	}
       $r[2] .= "\n" . $m2->[2];
       $uncomp_buf = $next_uncomp_buf;
-      # print Dumper "new: ", \@r, $m2, $compname, length($uncomp_buf);
     }
-
-# use Data::Dumper;
-# die Dumper \@r, "--------------------";
 
   if ($r[0] eq 'application/unknown+zip' and $r[2] =~ m{\btext\b}i)
     {
