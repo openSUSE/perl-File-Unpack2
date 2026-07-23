@@ -1,0 +1,22 @@
+# Build artifacts
+/blib/
+/Makefile
+/Makefile.old
+/pm_to_blib
+MYMETA.*
+*.o
+*.bs
+*.def
+*.so
+
+# Generated distribution
+/File-Unpack2-*
+/MANIFEST.bak
+
+# Devel::Cover
+/cover_db/
+
+# Editors / misc
+*.bak
+*~
+.DS_Store

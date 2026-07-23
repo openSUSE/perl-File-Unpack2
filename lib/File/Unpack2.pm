@@ -75,16 +75,16 @@ use POSIX ();
 
 =head1 NAME
 
-File::Unpack2 - A strong bz2/gz/zip/tar/cpio/rpm/deb/cab/lzma/7z/rar/... archive unpacker, based on mime-types
+File::Unpack2 - Aggressively unpack any archive, recursively, by mime type
 
 =head1 VERSION
 
-Version 0.69
+Version 2.0
+
 =cut
 
-# We'll have 1.x versions only after minfree() has a baseline implementation.
 # Please run perl Makefile.PL after changing the version here.
-our $VERSION = '1.5';
+our $VERSION = '2.0';
 
 POSIX::setlocale(&POSIX::LC_ALL, 'C');
 $ENV{PATH} = '/usr/bin:/bin';
@@ -122,8 +122,17 @@ my $UNCOMP_BUFSZ = 1024;
 # got into a loop by then, than really have that many levels.
 my $RECURSION_LIMIT = 50;
 
-# Suggested place, where admins should install the helpers bundled with this module.
-sub _default_helper_dir { $ENV{FILE_UNPACK2_HELPER_DIR}||'/usr/share/File-Unpack2/helper' }
+# External MIME helper scripts are bundled inside the module tree under
+# lib/File/Unpack2/resources/helper/ and located relative to this file (the same
+# trick Mojolicious uses for its bundled resources). This means they install
+# automatically with the module - no manual copy to /usr/share is needed. Admins
+# can still point elsewhere with the FILE_UNPACK2_HELPER_DIR environment variable.
+sub _default_helper_dir
+{
+  return $ENV{FILE_UNPACK2_HELPER_DIR} if $ENV{FILE_UNPACK2_HELPER_DIR};
+  (my $dir = __FILE__) =~ s{\.pm$}{/resources/helper};
+  return $dir;
+}
 
 # we use '=' in the mime_name, this expands to '/(x\-|ANY\+)?'
 ##
@@ -223,61 +232,61 @@ sub _locate_cpio_i
 
 =head1 SYNOPSIS
 
-This perl module comes with an executable script:
-
-/usr/bin/file_unpack2 -h
-
-/usr/bin/file_unpack2 [-1] [-m] ARCHIVE_FILE ...
-
-
-File::Unpack2 is an unpacker for archives and files
-(bz2/gz/zip/tar/cpio/iso/rpm/deb/cab/lzma/7z/rar ... pdf/odf) based on
-MIME types.  We call it strong, because it is not fooled by file suffixes, or
-multiply wrapped packages. It recursively descends into each archive found
-until it finally exposes all unpackable payload contents.
-
-A logfile can be written, precisely describing MIME types and unpack actions.
-
     use File::Unpack2;
 
+    # Recursively unpack an archive into a destination directory, capturing a
+    # JSON log of everything that was produced.
     my $log;
-    my $u = File::Unpack2->new(logfile => \$log);
+    my $u = File::Unpack2->new(logfile => \$log, destdir => '/tmp/out');
+    $u->unpack('inputfile.tar.bz2');
+    print "$1\n" while $log =~ m{^\s*"(.*?)":}g;   # every unpacked file
 
+    # Just identify a file's mime type (not fooled by the suffix).
     my $m = $u->mime('/etc/init.d/rc');
-    print "$m->[0]; charset=$m->[1]\n";
-    # text/x-shellscript; charset=us-ascii
+    print "$m->[0]; charset=$m->[1]\n";            # text/x-shellscript; charset=us-ascii
 
-    map { print "$_->{name}\n" } @{$u->mime_helper()};
-    # application/%rpm
-    # application/%tar+gzip
-    # application/%tar+bzip2
-    # ...
+    # List the mime helpers that are wired up.
+    print "$_->{name}\n" for @{$u->mime_helper()};
 
-    $u->unpack("inputfile.tar.bz2");
-    while ($log =~ m{^\s*"(.*?)":}g) # it's JSON.
-      {
-        print "$1\n"; 	# report all files unpacked
-      }
+The distribution also ships a command line front-end, C<file_unpack2>; run
+C<file_unpack2 --help> for its options.
 
-    ...
+=head1 DESCRIPTION
 
-Most of the known archive file formats are supported. Shell-script-style
-plugins can be added to support additinal formats.
+File::Unpack2 unpacks archives and compressed files of essentially any common
+type - C<bz2>, C<gz>, C<xz>/C<lzma>, C<zip>, C<tar>, C<cpio>, C<iso>, C<rpm>,
+C<deb>, C<cab>, C<7z>, C<rar>, and more, down to C<pdf> and C<odf> - and it does
+so I<aggressively>: it identifies each file by its B<mime type> rather than its
+name, and it recursively descends into everything it produces, so a
+tar-inside-zip-inside-rpm is peeled apart to the last layer without being fooled
+by misleading (or absent) file suffixes.
 
-Helper shell-scripts can be added to support additional mime-types. Example:
+It was built for, and is primarily developed as a dependency of,
+L<Cavil|https://github.com/openSUSE/cavil>, openSUSE's legal review system, whose
+job is to extract every scrap of readable text from a source package so it can be
+scanned for license information. That goal - I<expose as much readable payload as
+possible> - shapes the whole design: unpacking continues as deep as it can, and
+individual failures are logged and stepped over rather than aborting the run.
 
-F<< $ echo "ar x $1" > /usr/share/File-Unpack2/helper/application=x-debian-package >>
+Unpacking is dispatched to per-mime-type B<helpers>. Many are built in (wrapping
+the usual command line tools such as C<tar>, C<unzip> and C<rpm2cpio>); more can
+be added as small external helper scripts named after the mime type they handle.
+The bundled helpers ship inside the module tree
+(F<lib/File/Unpack2/resources/helper/>) and are found automatically. See
+L</unpack> for the helper protocol and L</mime_helper_dir> for how helper
+directories are searched.
 
-F<< $ chmod a+x /usr/share/File-Unpack2/helper/application=x-debian-package >>
+Because Cavil feeds it whole distributions - including binaries, deliberately
+malformed samples and archive "bombs" - File::Unpack2 is hardened against hostile
+input: it enforces optional caps on file count, total bytes and per-helper
+runtime, watches helpers for stalls, and passes memory limits to the C<xz>/C<lzma>
+decoders. See L</new> for the relevant knobs.
 
-This example creates a trivial external equivalent of the builtin MIME helper for *.deb packages. 
-For details see the documentation of the C<unpack()> method.
+A logfile (JSON, or a plain listing) precisely records every mime type detected
+and every unpack action taken.
 
-C<unpack> examines the contents of an archive file or directory using an extensive 
-mime-type analysis. The contents is unpacked recursively to the given destination
-directory; a listing of the unpacked files is reported through the built in
-logging facility during unpacking. Most common archive file formats are handled 
-directly; more can easily be added as mime-type helper plugins.
+See the C<docs/Architecture.md> document in the distribution for a prose overview
+of how it all fits together.
 
 =head1 SUBROUTINES/METHODS
 
@@ -406,7 +415,7 @@ sub exclude
 {
   my $self = shift;
   my %opt = $#_ ? @_ : (add => $_[0]);
-  
+
   # ADD to this list from: https://build.opensuse.org/project/show?project=devel%3Atools%3Ascm
   my @vcs = qw(SCCS RCS CVS .svn .git .hg .osc);
 
@@ -421,7 +430,7 @@ sub exclude
     {
       $self->{exclude}{list}{$a}++ if defined $a;
     }
-  
+
   for my $a (@{$opt{del}})
     {
       delete $self->{exclude}{list}{$a} if defined $a;
@@ -443,22 +452,28 @@ sub exclude
   return $opt{re} ? $self->{exclude}{re} : \@list;
 }
 
-=begin private 
+=head2 Internal logging helpers
 
-=item log, logf, loggable_pathname
+These are used internally by C<unpack> and are not normally called directly.
 
-The C<log> method is used by C<unpack> to send text to the logfile.
-The C<logf> method takes a filename and a hash, and logs a JSON formatted line.
-The trailing newline character of a line is delayed; it is printed by the next call to 
-C<log> or C<logf>. In case of C<logf>, a comma is emitted before the newline 
-from the second call onward.
+=over 4
 
-The C<loggable_pathname> shortens a path to be relative to either
-$self->{destdir} or $self->{input} unless $self->{log_fullpath} is true.
-If a hash is provided as a second parameter and the path was found to be relative 
-to $self->{input}, then an entry { 'srcdir' => 'input' } is added to this hash.
+=item log
 
-=end private
+Send text to the logfile.
+
+=item logf
+
+Take a filename and a hash and log a JSON-formatted line. The trailing newline of
+a line is delayed and emitted by the next call (with a leading comma from the
+second call onward, so the accumulated result is valid JSON).
+
+=item loggable_pathname
+
+Shorten a path to be relative to either C<< $self->{destdir} >> or
+C<< $self->{input} >>, unless C<< $self->{log_fullpath} >> is true.
+
+=back
 
 =cut
 sub log
@@ -576,7 +591,7 @@ sub _fs_check
       return 1 if $free_b >= $needed_b && 
                   $free_i >= $needed_i && 
 		  (100-$perc > $needed_p);
-	
+
       return -1 unless $self->{fs_warn};
       my $w = $self->{fs_warn}->($self->{destdir}, $perc, $free_b, $free_i);
       return 0 if $w;
@@ -799,8 +814,9 @@ with a ' ' whitespace, and end in a ',' comma. Everything else is prolog or epil
 The actual unpacking is dispatched to MIME type specific helpers,
 selected using C<mime>. A MIME helper can either be built-in code, or an
 external shell-script found in a directory registered with
-C<mime_helper_dir>. The standard place for external helpers is
-F</usr/share/File-Unpack2/helper>; it can be changed by the environment variable
+C<mime_helper_dir>. The bundled helpers live inside the module tree at
+F<lib/File/Unpack2/resources/helper/> and are found automatically; the search
+directory can be overridden with the environment variable
 F<FILE_UNPACK2_HELPER_DIR> or the C<new> parameter C<helper_dir>.
 
 The naming of helper scripts is described under C<mime_helper()>.
@@ -1125,7 +1141,7 @@ sub unpack
 
 	      ## new_name is a suggestion for the mime_helper only. 
 	      my $new_name = $in_file;
-	      
+
 	      # Either shorten the name from e.g. foo.txt.bz2 to foo.txt or append 
 	      # something: foo.pdf to foo.pdf._;
 	      # Normally a suffix is appended by '.', but we also see '-' or '_' in real life.
@@ -1146,7 +1162,7 @@ sub unpack
 	      #   {
 	      #     $self->logf($archive => { unpacking => $h->{fmt_p} });
 	      #   }
-	        
+
 	      my ($unpacked, $diag) = 
 	         $self->_run_mime_helper($h, $archive, $new_name, $destdir, 
 	      				$m->[0], $m->[2], $self->{configdir});
@@ -1571,7 +1587,7 @@ sub _run_mime_helper
     };
   $args->{lsrc} = Cwd::realpath($args->{src});	# symlinks resolved; use this with a stupid unpacker like 'upx'
   die "src must be an abs_path." unless $args->{src} =~ m{^/};
-  
+
   my @cmd;
   for my $a (@{$h->{argvv}})
     {
@@ -2148,7 +2164,7 @@ implicit '=ANY+' if needed.
 			        application=zip
 			         application=ANY
 				      ...
-  
+
 A trailing '=ANY' is implicit, as shown by these examples. 
 The rules for precedence are this:
 
@@ -2158,7 +2174,7 @@ The rules for precedence are this:
 
 Search in the latest directory is exhaused first, then the previously added directory is considered in turn,
 up to all directories have been traversed, or until a matching helper is found.
- 
+
 =item *
 
 A matching name with wildcards has lower precedence than a matching name without.
@@ -2333,7 +2349,7 @@ sub find_mime_helper
   return $self->{mime_orcish}{$mimetype}
     if defined $self->{mime_orcish}{$mimetype} and 
             -f $self->{mime_orcish}{$mimetype}{argvv}[0][0];
-  
+
   my $r = undef;
   for my $h (@{$self->{mime_helper}})
     {
@@ -2436,7 +2452,7 @@ The given number of bytes (in optional K, M, G, or T units) must be free.
 =item *
 
 The filesystem must have at least the given free percentage. The '%' character is optional.
- 
+
 =back
 
 The warning method is called if any of the above conditions fail. Its signature is: 
@@ -2552,7 +2568,7 @@ A similar rule exitst for 'application/octect-stream'. It may trigger e.g. for
 LZMA compressed files which fail to provide a magic number.
 
 Examples:
- 
+
  [ 'text/x-perl', 'us-ascii', 'a /usr/bin/perl -w script text']
 
  [ 'text/x-mpegurl', 'utf-8', 'M3U playlist text', 
@@ -2617,7 +2633,7 @@ sub mime
     }
   print STDERR "flm->checktype_contents: $mime1\n" if $self->{verbose} > 1;
   $in{file} = '-' unless defined $in{file};
-    
+
   return [ 'x-system/x-error', undef, $mime1 ] if $mime1 =~ m{^cannot open};
 
   # in SLES11 we get 'text/plain charset=utf-8' without semicolon.
@@ -2627,7 +2643,7 @@ sub mime
   my @r = ($mime1, $enc, $flm->describe_contents($in{buf}) );
   my $mime2;
 
-  
+
   if ($mime1 =~ m{^application/xml})
     {
       # This is horrible from a greedy text cruncher perspective:
@@ -2884,162 +2900,57 @@ sub mime
   return \@r;
 }
 
-=head1 AUTHOR
+=head1 MIME TYPE DETECTION
 
-Juergen Weigert, C<< <jnw at cpan.org> >>
+File::Unpack2 identifies files by content, not by name. Detection is layered:
+L<File::LibMagic> (the same C<libmagic> engine as F</usr/bin/file>) is the primary
+source of mime type, charset and a human description; L<File::MimeInfo::Magic>
+(the freedesktop.org shared-mime-info database) fills the gaps where libmagic is
+weak; and a little extra logic on top recognises compression that carries no
+usable magic of its own, most notably raw LZMA. The C<description> string is
+cross-checked against the mime type to catch mislabellings before a helper is
+chosen. Both magic modules are loaded lazily and only L</mime> requires them.
 
-=head1 BUGS
+=head1 SEE ALSO
 
-The implementation of C<mime> is an ugly hack. We suffer from the existence of
-multiple file magic databases, and multiple conflicting implementations. With
-Perl we have at least 5 modules for this; here we use two.
+=over 2
 
-The builtin list of MIME helpers is incomplete. Please submit your handler code.
+=item *
 
-Please report any bugs or feature requests to C<bug-file-unpack at rt.cpan.org>, or through
-the web interface at L<http://rt.cpan.org/NoAuth/ReportBug.html?Queue=File-Unpack2>.  I will be notified, and then you'll
-automatically be notified of progress on your bug as I make changes.
+L<Cavil|https://github.com/openSUSE/cavil> - the openSUSE legal review system this
+module is developed for.
 
+=item *
 
-=head1 RELATED MODULES
+L<File::LibMagic>, L<File::MimeInfo::Magic> - the mime type engines.
 
-While designing File::Unpack2, a range of other perl modules were examined. Many modules provide valuable service to File::Unpack2 and became dependencies or are recommended.
-Others exposed drawbacks during closer examination and may find some of their
-wheels re-invented here.
+=item *
 
-=head2 Used Modules
+L<IPC::Run> - used to run and supervise the external mime helpers.
 
-=over
+=item *
 
-=item File::LibMagic
-
-This is the prefered mimetype engine. It disregards the suffix, recognizes more
-types than any of the alternatives, and uses exactly the same engine as
-/usr/bin/file in openSUSE systems. It also returns charset and description
-information.  We crossreference the description with the mimetype to detect
-weaknesses, and consult File::MimeInfo::Magic and some own logic, for e.g.
-detecting LZMA compression which fails to provide any recognizable magic.
-Required if you use C<mime>; otherwise not a hard requirement.
-
-=item File::MimeInfo::Magic
-
-Uses both magic information and file suffixes to determine the mimetype. Its
-magic() function is used in a few cases, where File::LibMagic fails.  E.g. as
-of June 2010, libmagic does not recognize 'image/x-targa'.
-File::MimeInfo::Magic may be slower, but it features the shared-mime-info
-database from freedesktop.org .  Recommended if you use C<mime>.
-
-=item String::ShellQuote 
-
-Used to call external MIME helpers. Required.
-
-=item BSD::Resource
-
-Used to reliably restrict the maximum file size. Recommended.
-
-=item File::Path
-
-mkpath(). Required.
-
-=item Cwd
-
-fast_abs_path(). Required.
-
-=item JSON
-
-Used for formatting the logfile. Required.
+The C<docs/Architecture.md> document in the distribution, for a prose overview.
 
 =back
 
-=head2 Modules Not Used
-
-=over
-
-=item Archive::Extract
-
-Archive::Extract tries first to determine what type of archive you are passing
-it, by inspecting its suffix. 'Maybe this module should use something like
-"File::Type" to determine the type, rather than blindly trust the suffix'.
-[quoted from perldoc]
-
-Set $Archive::Extract::PREFER_BIN to 1, which will prefer the use of command 
-line programs and won't consume so much memory. Default: use "Archive::Tar".
-
-=item Archive::Zip
-
-If you are just going to be extracting zips (and/or other archives) you are 
-recommended to look at using Archive::Extract . [quoted from perldoc]
-It is pure perl, so it's a lot slower then your '/usr/bin/zip'.
-
-=item Archive::Tar
-
-It is pure Perl, so it's a lot slower then your "/bin/tar".
-It is heavy on memory, all will be read into memory. [quoted from perldoc]
-
-=item File::MMagic, File::MMagic::XS, File::Type
-
-Compared to File::LibMagic and File::MimeInfo::Magic, these three are inferior.
-They often say 'text/plain' or 'application/octet-stream' where the latter two report 
-useful mimetypes.
-
-=back
-
-=head1 SUPPORT
-
-You can find documentation for this module with the perldoc command.
-
-    perldoc File::Unpack2
-
-
-You can also look for information at:
-
-=over 4
-
-=item * RT: CPAN's request tracker
-
-L<http://rt.cpan.org/NoAuth/Bugs.html?Dist=File-Unpack2>
-
-=item * AnnoCPAN: Annotated CPAN documentation
-
-L<http://annocpan.org/dist/File-Unpack2>
-
-=item * CPAN Ratings
-
-L<http://cpanratings.perl.org/d/File-Unpack2>
-
-=item * Search CPAN
-
-L<http://search.cpan.org/dist/File-Unpack2/>
-
-=back
-
-=head1 SOURCE REPOSITORY
-
-L<http://search.cpan.org/search?query=File%3A%3AUnpack2>
+=head1 REPOSITORY
 
 L<https://github.com/openSUSE/perl-File-Unpack2>
 
-git clone L<https://github.com/openSUSE/perl-File-Unpack2.git>
+=head1 AUTHOR
 
-
-=head1 ACKNOWLEDGEMENTS
-
-MIME type recognition relies heavily on libmagic by Christos Zoulas. I had long 
-hesitated implementing File::Unpack2, but set to work, when I dicovered
-that File::LibMagic brings your library to perl. Thanks Christos. And thanks
-for tcsh too.
+Originally written by Juergen Weigert E<lt>jnw@cpan.orgE<gt>. Now maintained by
+Sebastian Riedel E<lt>sriedel@suse.comE<gt> and the SUSE team as a dependency of
+Cavil.
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright 2023 Sebastian Riedel
-Copyright 2010,2011,2012,2013 Juergen Weigert.
+Copyright (C) 2010-2013 Juergen Weigert, (C) 2023-2026 Sebastian Riedel.
 
-This program is free software; you can redistribute it and/or modify it
-under the terms of either: the GNU General Public License as published
-by the Free Software Foundation; or the Artistic License.
-
-See http://dev.perl.org/licenses/ for more information.
-
+This program is free software; you can redistribute it and/or modify it under the
+same terms as Perl itself, that is, either the GNU General Public License or the
+Artistic License. See L<https://dev.perl.org/licenses/> for more information.
 
 =cut
 

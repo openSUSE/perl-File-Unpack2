@@ -10,16 +10,21 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - uses: shogo82148/actions-setup-perl@v1
       - name: perl -V
         run: perl -V
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libmagic-dev liblzma-dev  poppler-utils curl
+          # libmagic + shared-mime-info power mime detection; the rest are the
+          # command line tools the mime helpers shell out to during the tests.
+          sudo apt-get install -y \
+            libmagic-dev liblzma-dev shared-mime-info \
+            poppler-utils cpio xz-utils curl
           curl -L https://cpanmin.us | perl - -v -n --installdeps .
-      - name: Run tests
+      - name: Build and test
         run: |
           perl Makefile.PL
+          make
           make test
